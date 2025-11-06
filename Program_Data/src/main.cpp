@@ -4,8 +4,8 @@
 #include <ESP32Servo.h>
 
 // Wi-Fi AP設定
-const char* ap_ssid = "WIFI";      // アクセスポイント名
-const char* ap_password = "";                       // パスワードなし（オープンAP）
+const char* ap_ssid = "RCyotto";      // アクセスポイント名
+const char* ap_password = "password";                       // パスワード
 IPAddress local_IP(192, 168, 4, 1);                // ESP32のIPアドレス
 IPAddress gateway(192, 168, 4, 1);                 // ゲートウェイ
 IPAddress subnet(255, 255, 255, 0);                // サブネットマスク
@@ -16,7 +16,22 @@ WebServer server(80);
 // サーボ設定
 Servo myServo;
 const int servoPin = 18;  // サーボモーターのPWMピン
-int servoPosition = 90;   // サーボの初期位置（中央）
+int servoPosition = 79;   // サーボの初期位置（中央）
+// 舵（rudder）用サーボ追加
+Servo myRudder;
+const int rudderPin = 19; // 舵用サーボのPWMピン（必要なら変更）
+int rudderPosition = 85;  // 舵の初期位置（中央）
+
+// 関数の前方宣言
+void handleRoot();
+void handleServo();
+void handleLeft();
+void handleRight();
+void handleCenter();
+void handleRudder();
+void handleRudderLeft();
+void handleRudderRight();
+void handleRudderCenter();
 
 // HTMLページ
 const char* htmlPage = R"rawliteral(
@@ -209,7 +224,8 @@ const char* htmlPage = R"rawliteral(
         <h2>🤖 サーボモーター制御</h2>
         
         <div class="info">
-            📡 Wi-Fi: ESP32_ServoController (オープン)<br>
+            📡 Wi-Fi: RCyotto<br>
+            🔐 Pass: ureshinkun<br>
             🌐 IP: 192.168.4.1
         </div>
         
@@ -234,6 +250,32 @@ const char* htmlPage = R"rawliteral(
             <button class="btn btn-left" onclick="setAngle(0)">⬅️ 左端 (0°)</button>
             <button class="btn btn-center" onclick="setAngle(90)">🎯 中央 (90°)</button>
             <button class="btn btn-right" onclick="setAngle(180)">➡️ 右端 (180°)</button>
+        </div>
+        
+        <!-- 舵（Rudder）コントロール -->
+        <div style="height:18px"></div>
+        <div class="info" style="margin-top:10px; background:linear-gradient(135deg,#43e97b,#38f9d7);">
+            🧭 舵コントロール
+        </div>
+        <div class="angle-display" id="rudderAngleDisplay" style="margin-top:12px;">
+            <div>舵の角度</div>
+            <div style="font-size:36px; margin-top:5px;"><span id="rudderPosition">90</span>°</div>
+        </div>
+        <div class="slider-container">
+            <div class="slider-label">🧭 舵位置調整 (±45°)</div>
+            <input type="range" min="45" max="135" value="90" class="custom-slider" id="rudderSlider" oninput="updateRudder(this.value)">
+            <div class="slider-marks">
+                <span>45°</span>
+                <span>67°</span>
+                <span>90°</span>
+                <span>112°</span>
+                <span>135°</span>
+            </div>
+        </div>
+        <div class="quick-buttons">
+            <button class="btn btn-left" onclick="setRudderAngle(45)">⬅️ 左端 (45°)</button>
+            <button class="btn btn-center" onclick="setRudderAngle(90)">🎯 中央 (90°)</button>
+            <button class="btn btn-right" onclick="setRudderAngle(135)">➡️ 右端 (135°)</button>
         </div>
     </div>
 
@@ -274,6 +316,34 @@ const char* htmlPage = R"rawliteral(
         window.onload = function() {
             const slider = document.getElementById('servoSlider');
             document.getElementById('position').innerHTML = slider.value;
+            // 舵スライダーの初期同期
+            const rudderSlider = document.getElementById('rudderSlider');
+            if (rudderSlider) document.getElementById('rudderPosition').innerHTML = rudderSlider.value;
+        }
+        
+        // 舵用の更新関数
+        function updateRudder(angle) {
+            const angleDisplay = document.getElementById('rudderAngleDisplay');
+            const positionElement = document.getElementById('rudderPosition');
+            angleDisplay.classList.add('updating');
+            fetch('/rudder?angle=' + angle)
+                .then(response => response.text())
+                .then(data => {
+                    positionElement.innerHTML = data;
+                    setTimeout(() => {
+                        angleDisplay.classList.remove('updating');
+                    }, 300);
+                })
+                .catch(error => {
+                    console.error('エラー:', error);
+                    angleDisplay.classList.remove('updating');
+                });
+        }
+
+        function setRudderAngle(angle) {
+            const slider = document.getElementById('rudderSlider');
+            if (slider) slider.value = angle;
+            updateRudder(angle);
         }
     </script>
 </body>
@@ -332,6 +402,8 @@ void setup() {
   
   // サーボモーターの設定
   myServo.attach(servoPin);
+    // 舵サーボの設定
+    myRudder.attach(rudderPin);
   delay(500);
   Serial.println("サーボモーター初期化完了");
   
@@ -343,7 +415,15 @@ void setup() {
   delay(1000);
   myServo.write(180);  // 右端
   delay(1000);
+    // 舵サーボテスト（±45度範囲内）
+    myRudder.write(60);   // 左端（-45度）
+    delay(800);
+    myRudder.write(90);   // 中央
+    delay(800);
+    myRudder.write(120);  // 右端（+45度）
+    delay(800);
   myServo.write(servoPosition);  // 初期位置に戻す
+    myRudder.write(rudderPosition);
   delay(500);
   Serial.println("サーボテスト完了");
   
@@ -353,20 +433,25 @@ void setup() {
   // APのIP設定を構成
   WiFi.softAPConfig(local_IP, gateway, subnet);
   
-  // アクセスポイントを開始（パスワードなし）
-  WiFi.softAP(ap_ssid);
+  // アクセスポイントを開始（パスワード付き）
+  WiFi.softAP(ap_ssid, ap_password);
   
   Serial.println("");
   Serial.println("Wi-Fi APモード開始成功！");
   Serial.print("SSID: ");
   Serial.println(ap_ssid);
-  Serial.println("Password: なし（オープンAP）");
+  Serial.print("Password: ");
+  Serial.println(ap_password);
   Serial.print("IPアドレス: ");
   Serial.println(WiFi.softAPIP());
   
   // Webサーバーのルート設定
   server.on("/", handleRoot);
   server.on("/servo", handleServo);        // 新しいスライダー用エンドポイント
+    server.on("/rudder", handleRudder);
+    server.on("/rudder/left", handleRudderLeft);
+    server.on("/rudder/right", handleRudderRight);
+    server.on("/rudder/center", handleRudderCenter);
   server.on("/left", handleLeft);
   server.on("/right", handleRight);
   server.on("/center", handleCenter);
@@ -377,12 +462,51 @@ void setup() {
   Serial.println("================================");
   Serial.println("📱 接続方法:");
   Serial.println("1. スマホ/PCのWi-Fi設定を開く");
-  Serial.println("2. 'ESP32_ServoController' を選択");
-  Serial.println("3. パスワードなし（そのまま接続）");
+  Serial.print("2. '");
+  Serial.print(ap_ssid);
+  Serial.println("' を選択");
+  Serial.print("3. パスワード: ");
+  Serial.println(ap_password);
   Serial.println("4. ブラウザで http://192.168.4.1 にアクセス");
   Serial.println("================================");
 }
 
 void loop() {
   server.handleClient();
+}
+
+// 舵用ハンドラー
+void handleRudder() {
+    if (server.hasArg("angle")) {
+        int angle = server.arg("angle").toInt();
+        // 舵は±45度（45度〜135度）に制限
+        angle = constrain(angle, 45, 135);
+        rudderPosition = angle;
+        myRudder.write(rudderPosition);
+        server.send(200, "text/plain", String(rudderPosition));
+        Serial.println("🧭 舵操作: " + String(rudderPosition) + "度");
+    } else {
+        server.send(400, "text/plain", "角度パラメータが見つかりません");
+    }
+}
+
+void handleRudderLeft() {
+    rudderPosition = max(45, rudderPosition - 30);  // 最小45度
+    myRudder.write(rudderPosition);
+    server.send(200, "text/plain", String(rudderPosition));
+    Serial.println("舵を左に: " + String(rudderPosition) + "度");
+}
+
+void handleRudderRight() {
+    rudderPosition = min(135, rudderPosition + 30);  // 最大135度
+    myRudder.write(rudderPosition);
+    server.send(200, "text/plain", String(rudderPosition));
+    Serial.println("舵を右に: " + String(rudderPosition) + "度");
+}
+
+void handleRudderCenter() {
+    rudderPosition = 90;
+    myRudder.write(rudderPosition);
+    server.send(200, "text/plain", String(rudderPosition));
+    Serial.println("舵をセンターに: " + String(rudderPosition) + "度");
 }
